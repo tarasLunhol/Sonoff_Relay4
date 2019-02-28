@@ -246,7 +246,7 @@ bool ESPWebMQTTBase::mqttReconnect() {
   static uint32_t nextTime;
   bool result = false;
 
-  if ((int32_t)millis() >= (int32_t)nextTime) {
+  if ((int32_t)(millis() - nextTime) >= 0) {
     _log->print(F("Attempting MQTT connection..."));
     enablePulse(PULSE);
     if (_mqttUser != strEmpty)

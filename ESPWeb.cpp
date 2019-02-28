@@ -80,7 +80,7 @@ void ESPWebBase::loop() {
   const uint32_t timeout = 300000; // 5 min.
   static uint32_t nextTime = timeout;
 
-  if ((!_apMode) && (WiFi.status() != WL_CONNECTED) && ((WiFi.getMode() == WIFI_STA) || ((int32_t)millis() >= (int32_t)nextTime))) {
+  if ((!_apMode) && (WiFi.status() != WL_CONNECTED) && ((WiFi.getMode() == WIFI_STA) || ((int32_t)(millis() - nextTime) >= 0))) {
     setupWiFi();
     nextTime = millis() + timeout;
   }
@@ -366,7 +366,7 @@ bool ESPWebBase::setupWiFiAsStation() {
   while (WiFi.status() != WL_CONNECTED) {
     _log->print(charDot);
     delay(500);
-    if ((int32_t)millis() >= (int32_t)maxTime) {
+    if ((int32_t)(millis() - maxTime) >= 0) {
       _log->println(F("FAIL!"));
       disablePulse();
       return false;
@@ -445,9 +445,9 @@ bool ESPWebBase::adminAuthenticate() {
 }
 
 uint32_t ESPWebBase::getTime() {
-  if ((WiFi.getMode() == WIFI_STA) && (_ntpServer1.length() || _ntpServer2.length() || _ntpServer3.length()) && ((! _lastNtpTime) || (_ntpUpdateInterval && ((int32_t)millis() - (int32_t)_lastNtpUpdate >= _ntpUpdateInterval)))) {
+  if ((WiFi.getMode() == WIFI_STA) && (_ntpServer1.length() || _ntpServer2.length() || _ntpServer3.length()) && ((! _lastNtpTime) || (_ntpUpdateInterval && (millis() - _lastNtpUpdate >= _ntpUpdateInterval)))) {
     uint32_t now = sntp_get_current_timestamp();
-    if (now) {
+    if (now > 1483228800UL) { // 01.01.2017 0:00:00
       _lastNtpTime = now;
       _lastNtpUpdate = millis();
       logDateTime(now);
@@ -456,7 +456,7 @@ uint32_t ESPWebBase::getTime() {
       const int32_t errorTimeout = 5000;
       static uint32_t lastError;
 
-      if ((int32_t)millis() - (int32_t)lastError > errorTimeout) {
+      if (millis() - lastError > errorTimeout) {
         _log->println(F("Unable to update time from NTP!"));
         lastError = millis();
       }

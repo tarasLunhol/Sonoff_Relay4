@@ -11,6 +11,9 @@
 #include <IRremoteESP8266.h>
 #include <IRrecv.h>
 
+//#define WIFISSID "yourssid" // Имя вашей сети для параметров по умолчанию
+//#define WIFIPASS "yourpass" // Пароль от вашей сети для параметров по умолчанию
+
 const int8_t maxSchedules = 10; // Количество элементов расписания
 
 const char overSSID[] PROGMEM = "SONOFF_"; // Префикс имени точки доступа по умолчанию
@@ -23,6 +26,8 @@ const uint8_t remotePin = 3; // Пин, к которому подключен �
 const bool pirLevel = HIGH; // Уровень срабатывания датчика движения
 
 const uint8_t climatePin = 14; // Пин, к которому подключен датчик температуры/влажности
+
+const uint8_t co_pin = 5;  // Пин, к которому подключен датчик CO2
 
 const bool defRelayOnBoot = false; // Состояние реле при старте модуля по умолчанию
 const uint16_t defRelayAutoOff = 0; // Время в секундах до автоотключения реле по умолчанию (0 - нет автоотключения)
@@ -97,17 +102,20 @@ const char mqttRelayTopic[] PROGMEM = "/Relay";
 const char mqttMotionTopic[] PROGMEM = "/Motion";
 const char mqttTemperatureTopic[] PROGMEM = "/Temperature";
 const char mqttHumidityTopic[] PROGMEM = "/Humidity";
+const char mqttCO2Topic[] PROGMEM = "/CO2";
 
 const char strNone[] PROGMEM = "(None)";
 
 const uint8_t RELAY_NAME_SIZE = 16;
 
+
 class ESPWebMQTTRelay : public ESPWebMQTTBase {
+
 public:
   ESPWebMQTTRelay() : ESPWebMQTTBase() {
-    _this = this;
+    _this = this;  
   }
-
+    
 protected:
   enum turn_t : uint8_t { TURN_NONE, TURN_OFF, TURN_ON, TURN_TOGGLE };
 
@@ -148,6 +156,7 @@ protected:
 
   void btnCallback(Button::buttonstate_t state);
   static void pirISR();
+  static void CO2_change();
 
   void pulseLed();
 
@@ -157,6 +166,10 @@ protected:
   static ESPWebMQTTRelay *_this;
 
 private:
+
+  static uint32_t th,h,l,tl; //CO2 vars
+  static uint16_t ppm;
+  
   void switchRelay(bool on, bool publish = true, uint16_t customAutoOff = 0); // Процедура включения/выключения реле
   void toggleRelay(bool publish = true); // Процедура переключения реле
 
@@ -167,6 +180,10 @@ private:
   void publishMotion(bool motion); // Публикация обнаружения движения в MQTT
   void publishTemperature(); // Публикация температуры в MQTT
   void publishHumidity(); // Публикация влажности в MQTT
+  void publishCO2(); // Публикация влажности в CO2
+
+  
+  String toJsonValue(String s);
 
   struct relay_t {
     bool relayOnBoot; // Состояние реле при старте модуля
@@ -174,8 +191,9 @@ private:
     uint16_t relayDblClkAutoOff; // Значения задержки реле в секундах до автоотключения при двойном нажатии на кнопку
     char relayName[RELAY_NAME_SIZE]; // Название реле
   } relay;
-  uint32_t autoOff; // Значения в миллисекундах для сравнения с millis(), когда реле должно отключиться автоматически (0 - нет автоотключения)
+  uint32_t autoOff;   // Значения в миллисекундах для сравнения с millis(), когда реле должно отключиться автоматически (0 - нет автоотключения)
   uint32_t lastState; // Битовое поле состояния реле для воостановления после перезагрузки
+  uint32_t co2Send; // Значения в миллисекундах для сравнения с millis(), показания CO2 должны быть опубликованы
 
   Events *events;
   Button *button;
@@ -212,6 +230,8 @@ private:
   float climateHumidity; // Значение успешно прочитанной влажности
   float climateMinTemp, climateMaxTemp; // Минимальное и максимальное значение температуры срабатывания реле
   float climateMinHum, climateMaxHum; // Минимальное и максимальное значение влажности срабатывания реле
+
+  
   struct {
     turn_t climateMinTempTurn : 2;
     turn_t climateMaxTempTurn : 2;
@@ -232,7 +252,9 @@ private:
     DS1820 *ds;
     DHT *dht;
   };
+  
 };
+
 
 static String charBufToString(const char* str, uint16_t bufSize) {
   String result;
@@ -271,6 +293,7 @@ void ESPWebMQTTRelay::setupExtra() {
   ESPWebMQTTBase::setupExtra();
 
   autoOff = 0;
+  co2Send = 60000;
 
   if (lastState != (uint32_t)-1) {
     if (lastState & 0x01) {
@@ -279,8 +302,10 @@ void ESPWebMQTTRelay::setupExtra() {
         autoOff = millis() + relay.relayAutoOff * 1000;
     } else
       digitalWrite(relayPin, ! relayLevel);
-  } else
+  } else {
     digitalWrite(relayPin, relay.relayOnBoot == relayLevel);
+    _log->println(F("\"On boot\" relay state restored"));
+  }
   pinMode(relayPin, OUTPUT);
 
   events = new Events();
@@ -333,14 +358,22 @@ void ESPWebMQTTRelay::setupExtra() {
   climateHumidity = NAN;
   climateMinHumTriggered = false;
   climateMaxHumTriggered = false;
+
+  pinMode(co_pin, INPUT);
+  attachInterrupt(co_pin, CO2_change, CHANGE);
 }
 
 void ESPWebMQTTRelay::loopExtra() {
   ESPWebMQTTBase::loopExtra();
 
-  if (autoOff && ((int32_t)millis() >= (int32_t)autoOff)) {
+  if (autoOff && ((int32_t)(millis() - autoOff) >= 0)) {
     switchRelay(false);
     autoOff = 0;
+  }
+
+   if (co2Send && ((int32_t)(millis() - co2Send) >= 0)) {
+    publishCO2();
+    co2Send = millis()+300000;// + 5min
   }
 
   uint32_t now = getTime();
@@ -378,7 +411,7 @@ void ESPWebMQTTRelay::loopExtra() {
         if (rf->available()) {
           uint32_t code = rf->getReceivedValue();
 
-          if (code && ((int32_t)millis() - (int32_t)lastRemoteTime > remoteTimeout)) {
+          if (code && (millis() - lastRemoteTime > remoteTimeout)) {
             lastRemoteCode = code;
             if (remoteCodeOn && (code == remoteCodeOn)) {
               switchRelay(true);
@@ -414,7 +447,7 @@ void ESPWebMQTTRelay::loopExtra() {
         static decode_results results;
 
         if (ir->decode(&results)) {
-          if ((results.decode_type != UNKNOWN) && ((int32_t)millis() - (int32_t)lastRemoteTime > remoteTimeout)) {
+          if ((results.decode_type != UNKNOWN) && (millis() - lastRemoteTime > remoteTimeout)) {
             uint32_t code = results.value;
 
             if (code != 0xFFFFFFFF) // repeat for NEC
@@ -479,7 +512,7 @@ void ESPWebMQTTRelay::loopExtra() {
   if (climateSensor != SENSOR_NONE) {
     if (climateSensor == SENSOR_DS1820) {
       if (ds) {
-        if ((int32_t)millis() >= (int32_t)climateReadTime) {
+        if ((int32_t)(millis() - climateReadTime) >= 0) {
           float v;
     
           v = ds->readTemperature();
@@ -530,7 +563,7 @@ void ESPWebMQTTRelay::loopExtra() {
       }
     } else { // climateSensor == SENSOR_DHTx
       if (dht) {
-        if ((int32_t)millis() >= (int32_t)climateReadTime) {
+        if ((int32_t)(millis() - climateReadTime) >= 0) {
           float v;
     
           v = dht->readTemperature();
@@ -651,7 +684,8 @@ uint16_t ESPWebMQTTRelay::readRTCmemory() {
     } else {
       _log->println(F("Last relay state restored from RTC memory"));
     }
-  }
+  } else
+    lastState = (uint32_t)-1;
 
   return offset;
 }
@@ -827,8 +861,14 @@ void ESPWebMQTTRelay::defaultConfig(uint8_t level) {
     ESPWebMQTTBase::defaultConfig(level);
 
     if (level < 1) {
+#if defined(WIFISSID) && defined(WIFIPASS)
+      _ssid = F(WIFISSID);
+      _password = F(WIFIPASS);
+      _apMode = false;
+#else
       _ssid = FPSTR(overSSID);
       _ssid += getBoardId();
+#endif
     }
     _mqttClient = FPSTR(overMQTTClient);
     _mqttClient += getBoardId();
@@ -1073,6 +1113,13 @@ var data = JSON.parse(request.responseText);\n");
   script += F("').innerHTML = uptimeToStr(data.");
   script += FPSTR(jsonUptime);
   script += F(");\n");
+
+  script += FPSTR(getElementById);
+  script += FPSTR(jsonCO2);
+  script += F("').innerHTML = data.");
+  script += FPSTR(jsonCO2);
+  script += F(";\n");
+
   if (WiFi.getMode() == WIFI_STA) {
     script += FPSTR(getElementById);
     script += FPSTR(jsonRSSI);
@@ -1115,6 +1162,8 @@ if (data.");
       script += FPSTR(jsonHumidity);
       script += F(";\n");
     }
+
+    
   }
   script += F("}\n\
 }\n\
@@ -1144,6 +1193,11 @@ Uptime: <span id=\"");
     page += FPSTR(jsonRSSI);
     page += F("\">?</span> dBm<br/>\n");
   }
+
+  page += F("CO2: <span id=\"");
+  page += FPSTR(jsonCO2);
+  page += F("\">?</span> PPM<br/>\n");
+  
   if (remoteSensor == REMOTE_PIR) {
     page += F("Motion: <span id=\"");
     page += FPSTR(jsonMotion);
@@ -1235,6 +1289,14 @@ String ESPWebMQTTRelay::jsonData() {
       result += isnan(climateHumidity) ? F("\"?\"") : String(climateHumidity);
     }
   }
+  
+  result += F(",\"");
+  result += FPSTR(jsonCO2);
+  result += F("\":");
+  ppm=5000*(th-2)/(th+tl-4);
+  
+  result += String(ppm);
+
 
   return result;
 }
@@ -1465,7 +1527,7 @@ void ESPWebMQTTRelay::handleRemoteData() {
   const int32_t remoteTimeout = 1000;
   static uint32_t lastTime;
 
-  if ((! lastRemoteCode) || ((int32_t)millis() - (int32_t)lastTime > remoteTimeout)) {
+  if ((! lastRemoteCode) || (millis() - lastTime > remoteTimeout)) {
     httpServer->send(204, FPSTR(textJson), strEmpty); // No content
   } else {
     String page;
@@ -2150,10 +2212,10 @@ void ESPWebMQTTRelay::mqttCallback(char* topic, byte* payload, unsigned int leng
 
     if ((char)payload[0] == '0') {
       if (relay)
-        switchRelay(false);
+        switchRelay(false, false);
     } else if ((char)payload[0] == '1') {
       if (! relay)
-        switchRelay(true);
+        switchRelay(true, false);
     } else {
       mqttPublish(String(topic), String(relay));
     }
@@ -2338,7 +2400,20 @@ void ESPWebMQTTRelay::publishTemperature() {
       topic += _mqttClient;
     }
     topic += FPSTR(mqttTemperatureTopic);
-    mqttPublish(topic, String(climateTemperature));
+    mqttPublish(topic, toJsonValue(String(climateTemperature)));
+  }
+}
+
+void ESPWebMQTTRelay::publishCO2() {
+  if (pubSubClient->connected()) {
+    String topic;
+
+    if (_mqttClient != strEmpty) {
+      topic += charSlash;
+      topic += _mqttClient;
+    }
+    topic += FPSTR(mqttCO2Topic);
+    mqttPublish(topic, toJsonValue(String(ppm)));
   }
 }
 
@@ -2351,7 +2426,7 @@ void ESPWebMQTTRelay::publishHumidity() {
       topic += _mqttClient;
     }
     topic += FPSTR(mqttHumidityTopic);
-    mqttPublish(topic, String(climateHumidity));
+    mqttPublish(topic, toJsonValue(String(climateHumidity)));
   }
 }
 
@@ -2427,7 +2502,7 @@ void ESPWebMQTTRelay::pirISR() {
   const int32_t pirTimeout = 10;
   static uint32_t lastPIRChanged;
 
-  if ((int32_t)millis() - (int32_t)lastPIRChanged > pirTimeout) { // Ignore bouncing
+  if (millis() - lastPIRChanged > pirTimeout) { // Ignore bouncing
     _this->motion = digitalRead(remotePin) == pirLevel;
 
     if (_this->motion && (_this->pirTurn != TURN_NONE)) {
@@ -2440,6 +2515,19 @@ void ESPWebMQTTRelay::pirISR() {
 
     lastPIRChanged = millis();
   }
+}
+
+void ESPWebMQTTRelay::CO2_change() {
+  uint32_t tt = millis();  
+  int myVal = digitalRead(co_pin);
+  if (myVal == HIGH) {
+    h=tt;
+    tl = tt-l;   
+  }else{
+    l=tt;
+    th=l-h;    
+  } 
+  
 }
 
 static const char part1[] PROGMEM = "<input type=\"radio\" name=\"";
@@ -2508,7 +2596,20 @@ String ESPWebMQTTRelay::turnRadios(const String &name, turn_t value) {
   return result;
 }
 
+String ESPWebMQTTRelay::toJsonValue(String s) {
+ String result;
+ result+=FPSTR("{\"value\":");
+ result+=s;
+ result+=FPSTR("}");
+ return result;
+}
+
 ESPWebMQTTRelay *app = new ESPWebMQTTRelay();
+uint32_t ESPWebMQTTRelay::th=0;
+uint32_t ESPWebMQTTRelay::tl=0;
+uint32_t ESPWebMQTTRelay::l=0;
+uint32_t ESPWebMQTTRelay::h=0;
+uint16_t ESPWebMQTTRelay::ppm=0;
 
 void setup() {
 #ifndef NOSERIAL

@@ -117,6 +117,7 @@ const char jsonUnixTime[] PROGMEM = "unixtime";
 const char jsonDate[] PROGMEM = "date";
 const char jsonTime[] PROGMEM = "time";
 const char jsonLog[] PROGMEM = "log";
+const char jsonCO2[] PROGMEM = "CO2";
 
 const char bools[][6] PROGMEM = { "false", "true" };
 
