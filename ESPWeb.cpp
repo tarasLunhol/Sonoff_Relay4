@@ -1131,6 +1131,19 @@ void ESPWebBase::handleGetTime() {
   httpServer->send(200, FPSTR(textJson), page);
 }
 
+String ESPWebBase::getDateString(uint32_t now) {
+    int8_t hh, mm, ss;
+    uint8_t wd;
+    int8_t d, m;
+    int16_t y;
+
+    parseUnixTime(now, hh, mm, ss, wd, d, m, y);
+    String result = dateToStr(d, m, y);
+    result += " ";
+    result += timeToStr(hh, mm, ss);
+    return result;
+}
+
 void ESPWebBase::handleSetTime() {
   setTime(_max(0, httpServer->arg(FPSTR(paramTime)).toInt()) + _ntpTimeZone * 3600);
 

@@ -373,6 +373,8 @@ void ESPWebMQTTRelay::loopExtra() {
 
    if (co2Send && ((int32_t)(millis() - co2Send) >= 0)) {
     publishCO2();
+    publishTemperature();
+    publishHumidity();
     co2Send = millis()+300000;// + 5min
   }
 
@@ -2366,16 +2368,16 @@ uint16_t ESPWebMQTTRelay::writeSchedulesConfig(uint16_t offset) {
 }
 
 void ESPWebMQTTRelay::publishRelay() {
-  if (pubSubClient->connected()) {
-    String topic;
+   if (pubSubClient->connected()) {
+     String topic;
 
-    if (_mqttClient != strEmpty) {
-      topic += charSlash;
-      topic += _mqttClient;
-    }
-    topic += FPSTR(mqttRelayTopic);
-    mqttPublish(topic, String(digitalRead(relayPin) == relayLevel));
-  }
+     if (_mqttClient != strEmpty) {
+       topic += charSlash;
+       topic += _mqttClient;
+     }
+     topic += FPSTR(mqttRelayTopic);
+     mqttPublish(topic, String(digitalRead(relayPin) == relayLevel));
+   }
 }
 
 void ESPWebMQTTRelay::publishMotion(bool motion) {
@@ -2413,6 +2415,7 @@ void ESPWebMQTTRelay::publishCO2() {
       topic += _mqttClient;
     }
     topic += FPSTR(mqttCO2Topic);
+    ppm=5000*(th-2)/(th+tl-4);
     mqttPublish(topic, toJsonValue(String(ppm)));
   }
 }

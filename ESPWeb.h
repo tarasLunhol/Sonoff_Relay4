@@ -193,6 +193,7 @@ protected:
   virtual bool adminAuthenticate();
 
   virtual uint32_t getTime(); // Возвращает время в формате UNIX-time с учетом часового пояса или 0, если ни разу не удалось получить точное время
+  virtual String getDateString(uint32_t now);
   virtual void setTime(uint32_t now); // Ручная установка времени в формате UNIX-time
   virtual void logDate(uint32_t now = 0); // Записать в лог переданную или текущую дату
   virtual void logTime(uint32_t now = 0); // Записать в лог переданное или текущее время
